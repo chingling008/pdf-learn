@@ -67,8 +67,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default="gpt-4o",
-        help="OpenAI model to use (default: gpt-4o).",
+        default=None,
+        help="Model to use. Defaults to 'gpt-4o' for openai, 'llama3.2' for ollama.",
+    )
+    parser.add_argument(
+        "--provider",
+        default="openai",
+        choices=["openai", "ollama"],
+        help="AI provider to use: 'openai' (requires OPENAI_API_KEY) or 'ollama' (free, local).",
     )
     return parser
 
@@ -125,17 +131,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # ------------------------------------------------------------------ #
-    # Validate inputs                                                      #
-    # ------------------------------------------------------------------ #
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        print(
-            "Error: OPENAI_API_KEY environment variable is not set.",
-            file=sys.stderr,
-        )
-        return 1
-
-    # ------------------------------------------------------------------ #
     # Build client                                                         #
     # ------------------------------------------------------------------ #
     try:
@@ -148,14 +143,32 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    client = OpenAI(api_key=api_key)
+    if args.provider == "ollama":
+        model = args.model or "llama3.2"
+        client = OpenAI(
+            api_key="ollama",  # Ollama doesn't need a real key
+            base_url="http://localhost:11434/v1",
+        )
+        print("Using Ollama (local, offline)")
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            print(
+                "Error: OPENAI_API_KEY environment variable is not set.\n"
+                "Tip: use --provider ollama to run locally for free.",
+                file=sys.stderr,
+            )
+            return 1
+        model = args.model or "gpt-4o"
+        client = OpenAI(api_key=api_key)
+        print("Using OpenAI")
 
     # ------------------------------------------------------------------ #
     # Set up grader and load material                                     #
     # ------------------------------------------------------------------ #
     from grader import ExamGrader
 
-    grader = ExamGrader(client=client, model=args.model)
+    grader = ExamGrader(client=client, model=model)
 
     print(f"Loading question paper from: {args.paper}")
     grader.load_question_paper(args.paper)
