@@ -161,7 +161,7 @@ class ExamApp(tk.Tk):
     def _file_row(self, p, label, var, filetypes) -> None:
         row = tk.Frame(p, bg=CARD)
         row.pack(fill="x", pady=(0, 6))
-        _label(row, label, bg=CARD, size=10).pack(side="left", width=130, anchor="w")
+        _label(row, label, bg=CARD, size=10, width=16).pack(side="left", anchor="w")
         tk.Entry(row, textvariable=var, font=("Segoe UI", 10),
                  relief="flat", bg=LIGHT, width=48).pack(side="left", padx=(0, 8))
         _btn(row, "Browse…", lambda v=var, ft=filetypes: self._browse(v, ft),
