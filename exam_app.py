@@ -7,11 +7,12 @@ Run with:
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, font, messagebox, scrolledtext, ttk
-from typing import Dict, List, Optional
+from tkinter import filedialog, messagebox, scrolledtext, ttk
+from typing import Dict, List
 
 # ---------------------------------------------------------------------------
 # Colour palette
@@ -268,37 +269,27 @@ class ExamApp(tk.Tk):
         main = tk.Frame(self._container, bg=BG)
         main.pack(fill="both", expand=True)
 
-        # --- Left navigator ---
-        nav_frame = tk.Frame(main, bg=CARD, width=160)
-        nav_frame.pack(side="left", fill="y", padx=(0, 0))
+        # --- Left navigator (lightweight Listbox — no Canvas) ---
+        nav_frame = tk.Frame(main, bg=CARD, width=130)
+        nav_frame.pack(side="left", fill="y")
         nav_frame.pack_propagate(False)
 
-        _label(nav_frame, "Questions", bold=True, size=10, bg=CARD).pack(pady=(16, 8))
-        self._nav_canvas = tk.Canvas(nav_frame, bg=CARD, highlightthickness=0)
-        nav_scroll = ttk.Scrollbar(nav_frame, orient="vertical",
-                                   command=self._nav_canvas.yview)
-        self._nav_inner = tk.Frame(self._nav_canvas, bg=CARD)
-        self._nav_inner.bind("<Configure>",
-                             lambda e: self._nav_canvas.configure(
-                                 scrollregion=self._nav_canvas.bbox("all")))
-        self._nav_canvas.create_window((0, 0), window=self._nav_inner, anchor="nw")
-        self._nav_canvas.configure(yscrollcommand=nav_scroll.set)
-        nav_scroll.pack(side="right", fill="y")
-        self._nav_canvas.pack(side="left", fill="both", expand=True)
-
-        self._nav_btns: Dict[int, tk.Button] = {}
-        for i, q in enumerate(self._questions):
-            b = tk.Button(
-                self._nav_inner,
-                text=f"Q{q.number}",
-                font=("Segoe UI", 9),
-                relief="flat", cursor="hand2",
-                bg=CARD, fg=MUTED,
-                width=8,
-                command=lambda idx=i: self._goto(idx),
-            )
-            b.pack(pady=2)
-            self._nav_btns[i] = b
+        _label(nav_frame, "Questions", bold=True, size=9, bg=CARD).pack(pady=(12, 4))
+        self._nav_lb = tk.Listbox(
+            nav_frame,
+            font=("Segoe UI", 9), relief="flat",
+            bg=CARD, fg=MUTED,
+            selectbackground=ACCENT, selectforeground="white",
+            activestyle="none", highlightthickness=0, bd=0,
+        )
+        sb = ttk.Scrollbar(nav_frame, orient="vertical",
+                           command=self._nav_lb.yview)
+        self._nav_lb.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self._nav_lb.pack(fill="both", expand=True, padx=4, pady=(0, 8))
+        for q in self._questions:
+            self._nav_lb.insert("end", f"  {q.label}")
+        self._nav_lb.bind("<<ListboxSelect>>", self._on_nav_select)
 
         # --- Right content ---
         right = tk.Frame(main, bg=BG)
@@ -347,7 +338,7 @@ class ExamApp(tk.Tk):
         self._progress_lbl.config(
             text=f"Question {self._current_q + 1} of {total}"
         )
-        self._q_num_lbl.config(text=f"Question {q.number}")
+        self._q_num_lbl.config(text=f"Question {q.label}")
         self._q_text_lbl.config(text=q.text)
 
         # Clear answer area
@@ -406,14 +397,22 @@ class ExamApp(tk.Tk):
     def _refresh_nav(self) -> None:
         for i, q in enumerate(self._questions):
             answered = q.number in self._answers
-            active = i == self._current_q
+            active   = i == self._current_q
             if active:
-                bg, fg = ACCENT, "white"
+                self._nav_lb.itemconfig(i, bg=ACCENT, fg="white")
             elif answered:
-                bg, fg = GREEN, "white"
+                self._nav_lb.itemconfig(i, bg="#d1fae5", fg=FG)
             else:
-                bg, fg = CARD, MUTED
-            self._nav_btns[i].config(bg=bg, fg=fg)
+                self._nav_lb.itemconfig(i, bg=CARD, fg=MUTED)
+        self._nav_lb.selection_clear(0, "end")
+        self._nav_lb.selection_set(self._current_q)
+
+    def _on_nav_select(self, _=None) -> None:
+        sel = self._nav_lb.curselection()
+        if sel and sel[0] != self._current_q:
+            self._save_current()
+            self._current_q = sel[0]
+            self._render_question()
 
     def _goto(self, idx: int) -> None:
         self._save_current()
@@ -487,46 +486,34 @@ class ExamApp(tk.Tk):
 
         _label(root, "Review Your Answers", bold=True, size=14, bg=BG).pack(anchor="w")
         _label(root, "Check your answers below. Click any question to edit it.",
-               size=9, color=MUTED, bg=BG).pack(anchor="w", pady=(2, 16))
+               size=9, color=MUTED, bg=BG).pack(anchor="w", pady=(2, 10))
 
-        canvas = tk.Canvas(root, bg=BG, highlightthickness=0)
-        scroll = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=BG)
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+        # Lightweight: plain Text widget showing the review summary (no Canvas)
+        review_txt = scrolledtext.ScrolledText(
+            root, wrap="word", font=("Segoe UI", 10),
+            bg=CARD, fg=TEXT, relief="flat", bd=0, state="normal",
+        )
+        review_txt.pack(fill="both", expand=True)
 
         for i, q in enumerate(self._questions):
-            ans = self._answers.get(q.number)
+            ans      = self._answers.get(q.number)
             answered = ans is not None
-            card = tk.Frame(inner, bg=CARD, padx=16, pady=10)
-            card.pack(fill="x", pady=(0, 8))
-            bar = tk.Frame(card, bg=GREEN if answered else ORANGE, width=4)
-            bar.pack(side="left", fill="y")
-            content = tk.Frame(card, bg=CARD, padx=10)
-            content.pack(side="left", fill="x", expand=True)
-            hdr = tk.Frame(content, bg=CARD)
-            hdr.pack(fill="x")
-            _label(hdr, f"Q{q.number}", bold=True, size=10, bg=CARD, color=ACCENT).pack(side="left")
-            status = "✓ Answered" if answered else "✗ Unanswered"
-            _label(hdr, status, size=9, color=GREEN if answered else ORANGE, bg=CARD).pack(side="left", padx=8)
-            _btn(hdr, "Edit", command=lambda idx=i: self._edit_from_review(idx),
-                 bg=LIGHT, fg=TEXT, size=9).pack(side="right")
+            marker   = "[✓]" if answered else "[✗]"
+            q_preview = q.text[:100].replace("\n", " ")
+            if q.is_multiple_choice and answered:
+                a_disp = f"{ans})  {q.options.get(ans, '')}"
+            elif answered:
+                a_disp = ans[:120].replace("\n", " ") + ("…" if len(ans) > 120 else "")
+            else:
+                a_disp = "No answer"
+            review_txt.insert("end",
+                f"[{'✓' if answered else '✗'}] {q.label}: {q_preview}\n"
+                f"     Your answer: {a_disp}\n\n")
 
-            q_preview = q.text[:120] + ("…" if len(q.text) > 120 else "")
-            _label(content, q_preview, size=9, color=MUTED, bg=CARD).pack(anchor="w", pady=(4, 2))
-            if answered:
-                if q.is_multiple_choice:
-                    ans_text = f"{ans})  {q.options.get(ans, '')}"
-                else:
-                    ans_text = ans[:200] + ("…" if len(ans) > 200 else "")
-                _label(content, f"Your answer: {ans_text}", size=10, color=TEXT, bg=CARD).pack(anchor="w")
+        review_txt.config(state="disabled")
 
         btn_row = tk.Frame(root, bg=BG)
-        btn_row.pack(fill="x", pady=(16, 0))
+        btn_row.pack(fill="x", pady=(10, 0))
         _btn(btn_row, "← Back to Exam", self._back_to_exam_from_review,
              bg=LIGHT, fg=TEXT).pack(side="left")
         _btn(btn_row, "✓  Submit & Grade", self._submit,
@@ -537,9 +524,8 @@ class ExamApp(tk.Tk):
         self._show_exam()
 
     def _back_to_exam_from_review(self) -> None:
+        # _show_exam() handles restarting the timer itself
         self._show_exam()
-        if self.timer_enabled.get() and self._remaining_seconds > 0:
-            self._tick_timer()
 
     # ======================================================================
     # Submit & Grade
@@ -578,8 +564,41 @@ class ExamApp(tk.Tk):
             grader = ExamGrader(client=client, model=model)
             grader.load_question_paper(self.paper_path.get())
             grader.load_marking_scheme(self.scheme_path.get())
-            grader.set_answers(self._answers)
-            report = grader.grade()
+
+            # Build answers keyed by original question label (e.g. "1.1.1")
+            # so the AI sees "Question 1.1.1: A" not "Question 3: A"
+            label_map = {q.number: q.label for q in self._questions}
+            labeled_answers = {
+                label_map.get(k, str(k)): v
+                for k, v in self._answers.items()
+            }
+            # Convert to sequential int keys for grader (grader uses sorted int keys)
+            grader.set_answers({i + 1: v for i, (_, v) in
+                                 enumerate(sorted(labeled_answers.items()))})
+            # Override the formatted text with labelled version
+            grader._question_paper = (
+                grader._question_paper or ""
+            )  # already set
+            # Inject labelled answers directly into the prompt
+            from grader import build_grading_prompt
+            from system_prompt import SYSTEM_PROMPT
+            ans_lines = "\n".join(
+                f"Question {lbl}: {ans}"
+                for lbl, ans in sorted(labeled_answers.items())
+            )
+            user_msg = build_grading_prompt(
+                question_paper=grader._question_paper,
+                marking_scheme=grader._marking_scheme,
+                student_answers=ans_lines,
+            )
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_msg},
+                ],
+            )
+            report = response.choices[0].message.content
             self.after(0, self._show_results, report)
         except Exception as exc:
             self.after(0, self._show_error, str(exc))
@@ -623,40 +642,26 @@ class ExamApp(tk.Tk):
              bg=LIGHT, fg=TEXT).pack(side="left", padx=8)
 
     def _build_wrong_tab(self, parent: tk.Frame, report: str) -> None:
-        canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
-        scroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=BG)
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        canvas.pack(fill="both", expand=True)
-
-        # Parse wrong answers from report (look for "Marks Awarded: 0" sections)
         wrong_sections = self._extract_wrong_sections(report)
 
         if not wrong_sections:
-            _label(inner, "🎉  No wrong answers detected!", bold=True,
+            _label(parent, "🎉  No wrong answers detected!", bold=True,
                    size=12, color=GREEN, bg=BG).pack(pady=40)
             return
 
-        _label(inner, f"You got {len(wrong_sections)} question(s) wrong or partially wrong:",
-               size=10, color=MUTED, bg=BG).pack(anchor="w", pady=(8, 12), padx=8)
+        _label(parent,
+               f"You got {len(wrong_sections)} question(s) wrong or partially wrong:",
+               size=10, color=MUTED, bg=BG).pack(anchor="w", pady=(8, 4), padx=8)
 
+        # Single ScrolledText — far lighter than Canvas + many Text widgets
+        txt = scrolledtext.ScrolledText(
+            parent, wrap="word", font=("Segoe UI", 10),
+            bg="#fff8f8", fg=TEXT, relief="flat", bd=0,
+        )
+        txt.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         for section in wrong_sections:
-            card = tk.Frame(inner, bg=CARD, padx=16, pady=12)
-            card.pack(fill="x", pady=(0, 8), padx=8)
-            bar = tk.Frame(card, bg=RED, width=4)
-            bar.pack(side="left", fill="y")
-            content = tk.Frame(card, bg=CARD, padx=10)
-            content.pack(side="left", fill="x", expand=True)
-            txt = tk.Text(content, wrap="word", font=("Segoe UI", 10),
-                          bg=CARD, fg=TEXT, relief="flat", bd=0,
-                          height=max(3, section.count("\n") + 2))
-            txt.insert("1.0", section.strip())
-            txt.configure(state="disabled")
-            txt.pack(fill="x")
+            txt.insert("end", section.strip() + "\n" + "─" * 60 + "\n\n")
+        txt.config(state="disabled")
 
     def _extract_wrong_sections(self, report: str) -> List[str]:
         """
@@ -706,6 +711,10 @@ class ExamApp(tk.Tk):
     # ======================================================================
 
     def _clear(self) -> None:
+        # Always cancel the timer before destroying widgets
+        if self._timer_job is not None:
+            self.after_cancel(self._timer_job)
+            self._timer_job = None
         for w in self._container.winfo_children():
             w.destroy()
 
