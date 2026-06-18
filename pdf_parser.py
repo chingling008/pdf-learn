@@ -124,6 +124,48 @@ def _find_options(block: str) -> Tuple[Dict[str, str], str]:
 
 
 # ---------------------------------------------------------------------------
+# Instruction / parent-label filter
+# ---------------------------------------------------------------------------
+
+# Phrases that indicate a question is really just an instruction header,
+# not something the student needs to answer directly.
+_INSTRUCTION_RE = re.compile(
+    r"(?:various options|write only the letter|choose the answer|"
+    r"complete the following|fill in the missing|indicate whether|"
+    r"choose.*from column|match.*column|choose.*term|"
+    r"answer.*question|read.*carefully|consists of section|"
+    r"start each question|number the answers|write neatly)",
+    re.IGNORECASE,
+)
+
+
+def _filter_questions(questions: List[Question]) -> List[Question]:
+    """
+    Remove:
+    1. Parent labels — e.g. '1.1' when '1.1.1' also exists.
+    2. Pure instruction questions (no real answer expected).
+    """
+    all_labels = {q.label for q in questions}
+    result = []
+    for q in questions:
+        # Skip if this label is a prefix of another label (it's a parent header)
+        is_parent = any(
+            other.startswith(q.label + ".") for other in all_labels if other != q.label
+        )
+        if is_parent:
+            continue
+        # Skip if the text is clearly an instruction
+        if _INSTRUCTION_RE.search(q.text):
+            continue
+        result.append(q)
+
+    # Re-number sequentially
+    for i, q in enumerate(result):
+        q.number = i + 1
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -133,7 +175,8 @@ def parse_questions(source: str) -> List[Question]:
     Returns a list of Question objects with sequential .number fields.
     """
     text = _clean(load_text(source))
-    return _extract_questions(text)
+    questions = _extract_questions(text)
+    return _filter_questions(questions)
 
 
 def _extract_questions(text: str) -> List[Question]:

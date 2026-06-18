@@ -74,7 +74,7 @@ class ExamApp(tk.Tk):
         self.scheme_path = tk.StringVar()
         self.provider_var = tk.StringVar(value="Ollama (local, free)")
         self.api_key_var = tk.StringVar()
-        self.mode_var = tk.StringVar(value="multiple_choice")
+        self.mode_var = tk.StringVar(value="normal")  # "normal" or "mc_only"
         self.timer_enabled = tk.BooleanVar(value=False)
         self.timer_minutes = tk.IntVar(value=30)
 
@@ -110,7 +110,7 @@ class ExamApp(tk.Tk):
         # --- Files ---
         self._setup_card(root, "Documents", self._files_setup_content)
         # --- Mode ---
-        self._setup_card(root, "Exam Mode", self._mode_setup_content)
+        self._setup_card(root, "Answer Mode", self._mode_setup_content)
         # --- Timer ---
         self._setup_card(root, "Timer (optional)", self._timer_setup_content)
 
@@ -176,21 +176,23 @@ class ExamApp(tk.Tk):
     def _mode_setup_content(self, p: tk.Frame) -> None:
         row = tk.Frame(p, bg=CARD)
         row.pack(fill="x")
-        for val, lbl, desc in [
-            ("multiple_choice", "Multiple Choice",
-             "Click A/B/C/D — options parsed automatically from the PDF"),
-            ("written", "Written Answer",
-             "Type your answer for each question — navigate freely"),
+        for val, title, desc in [
+            ("normal",
+             "Normal (as in paper)",
+             "MC questions show A/B/C/D buttons. Written questions get a text box."),
+            ("mc_only",
+             "Multiple Choice Only",
+             "AI converts ALL questions to A/B/C/D — even written ones."),
         ]:
-            col = tk.Frame(row, bg=CARD, padx=8, pady=8,
+            col = tk.Frame(row, bg=CARD, padx=10, pady=8,
                            highlightbackground=LIGHT, highlightthickness=1)
             col.pack(side="left", padx=(0, 12), fill="y")
-            rb = tk.Radiobutton(col, variable=self.mode_var, value=val,
-                                text=lbl, font=("Segoe UI", 10, "bold"),
-                                bg=CARD, fg=TEXT, activebackground=CARD,
-                                selectcolor=CARD)
-            rb.pack(anchor="w")
-            _label(col, desc, size=9, color=MUTED, bg=CARD).pack(anchor="w", padx=(20, 0))
+            tk.Radiobutton(col, variable=self.mode_var, value=val,
+                           text=title, font=("Segoe UI", 10, "bold"),
+                           bg=CARD, fg=TEXT, activebackground=CARD,
+                           selectcolor=CARD).pack(anchor="w")
+            _label(col, desc, size=9, color=MUTED, bg=CARD,
+                   wraplength=240, justify="left").pack(anchor="w", padx=(20, 0))
 
     def _timer_setup_content(self, p: tk.Frame) -> None:
         row = tk.Frame(p, bg=CARD)
@@ -256,7 +258,102 @@ class ExamApp(tk.Tk):
         else:
             self._remaining_seconds = 0
 
-        self._show_exam()
+        if self.mode_var.get() == "mc_only":
+            # Convert all written questions to MC using AI
+            self._clear()
+            loading_frame = tk.Frame(self._container, bg=BG)
+            loading_frame.pack(expand=True)
+            _label(loading_frame, "Converting to Multiple Choice…",
+                   bold=True, size=13, bg=BG).pack()
+            _label(loading_frame, "The AI is generating options for written questions.",
+                   size=10, color=MUTED, bg=BG).pack(pady=6)
+            _label(loading_frame, "This only happens once before the exam starts.",
+                   size=9, color=MUTED, bg=BG).pack()
+            self.update_idletasks()
+            threading.Thread(target=self._convert_to_mc_thread, daemon=True).start()
+        else:
+            self._show_exam()
+
+    # ======================================================================
+    # ======================================================================
+    # MC Conversion (MC-only mode)
+    # ======================================================================
+
+    def _convert_to_mc_thread(self) -> None:
+        """Run in background: ask AI to generate A/B/C/D for every written question."""
+        try:
+            import json as _json
+            from openai import OpenAI
+            from pdf_utils import load_pdf_text
+
+            if self.provider_var.get().startswith("Ollama"):
+                client = OpenAI(api_key="ollama",
+                                base_url="http://localhost:11434/v1")
+                model = "llama3.2"
+            else:
+                client = OpenAI(api_key=self.api_key_var.get())
+                model = "gpt-4o"
+
+            # Load marking scheme text for context
+            scheme_path = self.scheme_path.get()
+            if scheme_path.lower().endswith(".pdf"):
+                scheme_text = load_pdf_text(scheme_path)
+            else:
+                with open(scheme_path, encoding="utf-8") as fh:
+                    scheme_text = fh.read()
+
+            written_qs = [q for q in self._questions if not q.is_multiple_choice]
+
+            if not written_qs:
+                # All already MC — nothing to do
+                self.after(0, self._show_exam)
+                return
+
+            q_lines = "\n".join(
+                f"{q.label}: {q.text.strip()}" for q in written_qs
+            )
+
+            prompt = (
+                "You are converting exam questions to multiple-choice format.\n\n"
+                "MARKING SCHEME (for reference to make correct answers):\n"
+                f"{scheme_text[:4000]}\n\n"
+                "QUESTIONS TO CONVERT:\n"
+                f"{q_lines}\n\n"
+                "For EACH question above, generate exactly 4 options (A, B, C, D).\n"
+                "One option must be correct; the others must be plausible but wrong.\n"
+                "Do NOT indicate which option is correct.\n\n"
+                "Respond ONLY with a JSON array — no extra text, no markdown fences:\n"
+                "[\n"
+                '  {"label": "1.2.1", "A": "...", "B": "...", "C": "...", "D": "..."},\n'
+                "  ...\n"
+                "]\n"
+            )
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            raw = response.choices[0].message.content.strip()
+            # Strip markdown code fences if model wraps response
+            raw = re.sub(r"^```[a-z]*\n?", "", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\n?```$", "", raw)
+
+            data = _json.loads(raw)
+            label_map = {item["label"]: item for item in data}
+
+            for q in self._questions:
+                if not q.is_multiple_choice and q.label in label_map:
+                    item = label_map[q.label]
+                    opts = {k: item[k] for k in ("A", "B", "C", "D") if k in item}
+                    if len(opts) >= 2:
+                        q.options = opts
+                        q.is_multiple_choice = True
+
+            self.after(0, self._show_exam)
+
+        except Exception as exc:
+            self.after(0, self._show_error, f"MC conversion failed:\n{exc}")
 
     # ======================================================================
     # Page: Exam
